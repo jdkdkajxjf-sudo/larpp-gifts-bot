@@ -218,9 +218,19 @@ async function handleText(msg: TgMessage) {
     case '/admin':
       await sendAdminPanel(msg.chat.id, user)
       break
-    case '/addpromo':
-      await handleAddPromoButtons(msg, user)
+    case '/addpromo': {
+      // /addpromo БЕЗ аргументов → кнопочный интерфейс
+      // /addpromo nft 5 100 → команда сразу (5 котов, 100 активаций)
+      // /addpromo stars 1000 10 → 1000⭐, 10 активаций
+      // /addpromo nft 2 50 24h → 2 кота, 50 активаций, 24 часа
+      const args = parts.slice(1)
+      if (args.length === 0) {
+        await handleAddPromoButtons(msg, user)
+      } else {
+        await handleAddPromo(msg, user, args)
+      }
       break
+    }
     case '/broadcast':
       await handleBroadcast(msg, user, parts.slice(1).join(' '))
       break
