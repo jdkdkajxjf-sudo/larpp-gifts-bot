@@ -204,8 +204,9 @@ async function handleText(msg: TgMessage) {
     case '/stats': {
       const refCount = await db.user.count({ where: { referredById: user.id } })
       const promoCount = await db.promoRedemption.count({ where: { userId: user.id } })
-      const fresh = await db.user.findUnique({ where: { id: user.id } })
-      const bal = fresh?.balance ?? user.balance ?? 0
+      // Баланс через raw SQL — не зависим от Prisma client
+      const balRows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
+      const bal = balRows[0]?.balance ?? 0
       await send(msg.chat.id,
         [
           `📊 **Твоя статистика**`,
@@ -303,13 +304,24 @@ async function handlePromo(msg: TgMessage, user: { id: string; tgId: string }, c
     return
   }
 
-  const promo = await db.promoCode.findUnique({ where: { code: code.toUpperCase() } })
-  if (!promo || !promo.isActive) {
+  const promoCode = code.toUpperCase().trim()
+
+  // ⚠️ ВСЁ через raw SQL — не зависим от Prisma client (мог быть устаревшим)
+  // 1. Находим промокод
+  const promoRows = await db.$queryRaw`
+    SELECT id, type, reward, "maxUses", "usedCount", "isActive", "expiresAt"
+    FROM "larpp"."PromoCode"
+    WHERE code = ${promoCode}
+  ` as Array<{ id: string; type: string; reward: number; maxUses: number; usedCount: number; isActive: boolean; expiresAt: Date | null }>
+
+  if (promoRows.length === 0 || !promoRows[0].isActive) {
     await send(msg.chat.id, '❌ Промокод не найден или неактивен')
     return
   }
 
-  if (promo.expiresAt && promo.expiresAt < new Date()) {
+  const promo = promoRows[0]
+
+  if (promo.expiresAt && new Date(promo.expiresAt) < new Date()) {
     await send(msg.chat.id, '❌ Срок действия промокода истёк')
     return
   }
@@ -319,21 +331,31 @@ async function handlePromo(msg: TgMessage, user: { id: string; tgId: string }, c
     return
   }
 
-  const existing = await db.promoRedemption.findUnique({
-    where: { promoId_userId: { promoId: promo.id, userId: user.id } },
-  })
-  if (existing) {
+  // 2. Проверка — не использовал ли уже юзер этот промокод
+  const existingRows = await db.$queryRaw`
+    SELECT id FROM "larpp"."PromoRedemption"
+    WHERE "promoId" = ${promo.id} AND "userId" = ${user.id}
+  ` as Array<{ id: string }>
+  if (existingRows.length > 0) {
     await send(msg.chat.id, '❌ Ты уже использовал этот промокод')
     return
   }
 
-  // Редим
-  await db.promoRedemption.create({ data: { promoId: promo.id, userId: user.id } })
+  // 3. Редим — создаём запись
+  const redemptionId = 'redeem_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
+  await db.$executeRaw`
+    INSERT INTO "larpp"."PromoRedemption" (id, "promoId", "userId", "createdAt")
+    VALUES (${redemptionId}, ${promo.id}, ${user.id}, NOW())
+  `
+
+  // 4. Увеличиваем usedCount
   const newUsed = promo.usedCount + 1
-  await db.promoCode.update({
-    where: { id: promo.id },
-    data: { usedCount: newUsed, isActive: newUsed >= promo.maxUses ? false : true },
-  })
+  const newActive = newUsed >= promo.maxUses ? false : true
+  await db.$executeRaw`
+    UPDATE "larpp"."PromoCode"
+    SET "usedCount" = ${newUsed}, "isActive" = ${newActive}
+    WHERE id = ${promo.id}
+  `
 
   if (promo.type === 'nft') {
     const count = promo.reward
@@ -346,25 +368,21 @@ async function handlePromo(msg: TgMessage, user: { id: string; tgId: string }, c
       await send(msg.chat.id, `⚠️ NFT временно недоступен. Попробуй позже.`)
     }
   } else if (promo.type === 'stars') {
-    // Звёзды — начисляем на баланс
-    await db.user.update({
-      where: { id: user.id },
-      data: { balance: { increment: promo.reward } },
-    })
-    // ⚠️ Перечитываем юзера — на Cloud Shell мог быть старый Prisma client,
-    // у которого update возвращает объект без поля balance (undefined).
-    // findUnique точно вернёт актуальный баланс.
-    const fresh = await db.user.findUnique({ where: { id: user.id } })
-    let newBalance: number | undefined = fresh?.balance
-    // Если fresh.balance тоже undefined — raw SQL запрос (последний рубеж)
-    if (newBalance === undefined) {
-      try {
-        const rows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
-        newBalance = rows[0]?.balance
-      } catch (e) { console.error('[promo] raw balance query failed:', e) }
-    }
-    // Финальный fallback
-    if (newBalance === undefined) newBalance = promo.reward
+    // 5. Начисляем звёзды ЧЕРЕЗ RAW SQL — не зависим от Prisma
+    await db.$executeRaw`
+      UPDATE "larpp"."User"
+      SET balance = balance + ${promo.reward}
+      WHERE id = ${user.id}
+    `
+
+    // 6. Читаем ОБНОВЛЁННЫЙ баланс через raw SQL
+    const balanceRows = await db.$queryRaw`
+      SELECT balance FROM "larpp"."User" WHERE id = ${user.id}
+    ` as Array<{ balance: number }>
+    const newBalance = balanceRows[0]?.balance ?? promo.reward
+
+    console.log(`[promo] ${user.tgId} redeemed ${promoCode} +${promo.reward}⭐ → balance=${newBalance}`)
+
     await send(msg.chat.id,
       [
         `🎉 Промокод активирован! +${promo.reward}⭐`,
@@ -568,9 +586,13 @@ async function sendGiftByAmount(tgId: string, amount: number): Promise<boolean> 
 async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; balance: number }, amountArg?: string) {
   const amount = parseInt(amountArg ?? '0')
 
-  // Перечитываем баланс из БД — на Cloud Shell мог быть устаревший user объект
-  const freshUser = await db.user.findUnique({ where: { id: user.id } })
-  const realBalance = freshUser?.balance ?? user.balance ?? 0
+  // Перечитываем баланс ЧЕРЕЗ RAW SQL — не зависим от Prisma client
+  const balRows = await db.$queryRaw`
+    SELECT balance FROM "larpp"."User" WHERE id = ${user.id}
+  ` as Array<{ balance: number }>
+  const realBalance = balRows[0]?.balance ?? 0
+
+  console.log(`[withdraw] ${user.tgId} amount=${amount} realBalance=${realBalance}⭐`)
 
   if (!amount || !WITHDRAW_AMOUNTS.includes(amount)) {
     const kb: TgInlineKeyboardMarkup = {
@@ -595,16 +617,21 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
     return
   }
 
-  // Списываем
+  // Списываем ЧЕРЕЗ RAW SQL — атомарная проверка + списание в одном запросе
   try {
-    await db.$transaction(async (tx) => {
-      const fresh = await tx.user.findUnique({ where: { id: user.id } })
-      if (!fresh) throw new Error('user_missing')
-      if (fresh.balance < amount) throw new Error('insufficient')
-      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: amount } } })
-    })
-  } catch {
-    await send(msg.chat.id, '❌ Недостаточно звёзд.')
+    const result = await db.$executeRaw`
+      UPDATE "larpp"."User"
+      SET balance = balance - ${amount}
+      WHERE id = ${user.id} AND balance >= ${amount}
+    `
+    if (result === 0) {
+      // 0 строк обновлено → значит balance < amount
+      await send(msg.chat.id, `❌ Недостаточно звёзд.`)
+      return
+    }
+  } catch (e) {
+    console.error('[withdraw] debit failed:', e)
+    await send(msg.chat.id, '❌ Ошибка списания.')
     return
   }
 
@@ -634,7 +661,9 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
   })
 
   if (sent > 0) {
-    const newBal = (await db.user.findUnique({ where: { id: user.id } }))?.balance ?? 0
+    // Баланс через raw SQL
+    const balRows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
+    const newBal = balRows[0]?.balance ?? 0
     await send(msg.chat.id,
       [
         `✅ **Вывод выполнен!**`,
@@ -643,8 +672,8 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
         `💼 Баланс: ${newBal}⭐`,
       ].join('\n'))
   } else {
-    // Возврат
-    await db.user.update({ where: { id: user.id }, data: { balance: { increment: amount } } })
+    // Возврат через raw SQL
+    await db.$executeRaw`UPDATE "larpp"."User" SET balance = balance + ${amount} WHERE id = ${user.id}`
     await send(msg.chat.id, `❌ Не удалось отправить подарки. Звёзды возвращены.`)
   }
 }
@@ -707,24 +736,14 @@ async function handleListUsers(msg: TgMessage, user: { isAdmin: boolean }) {
   await send(msg.chat.id, `📋 **Юзеры (${users.length}):**\n\n${lines.join('\n')}`)
 }
 
-// Показ баланса юзера — использует raw SQL как самый надёжный способ
+// Показ баланса юзера — ЧЕРЕЗ RAW SQL (не зависим от Prisma client)
 async function handleBalance(msg: TgMessage, user: { id: string; tgId: string }) {
-  // Сначала через Prisma
-  const fresh = await db.user.findUnique({ where: { id: user.id } })
-  let balance: number | undefined = fresh?.balance
+  const rows = await db.$queryRaw`
+    SELECT balance FROM "larpp"."User" WHERE id = ${user.id}
+  ` as Array<{ balance: number }>
+  const balance = rows[0]?.balance ?? 0
 
-  // Если undefined — raw SQL
-  if (balance === undefined) {
-    try {
-      const rows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
-      balance = rows[0]?.balance
-    } catch (e) {
-      console.error('[balance] raw query failed:', e)
-    }
-  }
-
-  // Финальный fallback
-  if (balance === undefined) balance = 0
+  console.log(`[balance] ${user.tgId} → ${balance}⭐`)
 
   await send(msg.chat.id,
     [
@@ -825,9 +844,9 @@ async function handleCallback(cq: TgCallbackQuery) {
   } else if (act === 'stats') {
     const refCount = await db.user.count({ where: { referredById: user.id } })
     const promoCount = await db.promoRedemption.count({ where: { userId: user.id } })
-    // Перечитываем баланс на случай если user объект устарел
-    const fresh = await db.user.findUnique({ where: { id: user.id } })
-    const bal = fresh?.balance ?? user.balance ?? 0
+    // Баланс через raw SQL — не зависим от Prisma client
+    const balRows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
+    const bal = balRows[0]?.balance ?? 0
     await send(chatId,
       [
         `📊 **Твоя статистика**`,
