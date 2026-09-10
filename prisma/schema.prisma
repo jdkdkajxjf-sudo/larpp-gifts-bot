@@ -1,0 +1,62 @@
+// Larpp Gifts Bot — Prisma schema (uses "larpp" schema)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://postgres.izxodeqeofxkyeluymvz:wp8dZOTICPfYBCBQ@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
+  schemas  = ["larpp"]
+}
+
+model User {
+  id            String   @id @default(cuid())
+  tgId          String   @unique
+  username      String?
+  firstName     String?
+  isAdmin       Boolean  @default(false)
+  refCode       String   @unique
+  referredById  String?
+  referrer      User?    @relation("UserReferrals", fields: [referredById], references: [id])
+  referrals     User[]   @relation("UserReferrals")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  redemptions   PromoRedemption[]
+
+  @@schema("larpp")
+}
+
+model PromoCode {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  type          String    // "nft" или "stars"
+  reward        Int       // stars: кол-во звёзд, nft: кол-во NFT
+  nftSlug       String?   // для nft: slug NFT (пока всегда scared-cat)
+  maxUses       Int       @default(1)    // макс активаций
+  usedCount     Int       @default(0)
+  expiresAt     DateTime?                // по времени (null = бессрочно)
+  isActive      Boolean   @default(true)
+  createdById   String?
+  createdAt     DateTime  @default(now())
+
+  redemptions   PromoRedemption[]
+
+  @@index([isActive])
+  @@schema("larpp")
+}
+
+model PromoRedemption {
+  id          String   @id @default(cuid())
+  promoId     String
+  userId      String
+  createdAt   DateTime @default(now())
+
+  promo       PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([promoId, userId])
+  @@schema("larpp")
+}
