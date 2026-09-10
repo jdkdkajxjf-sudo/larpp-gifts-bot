@@ -99,7 +99,19 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!msg || !msg.text) return
     await handleText(msg)
   } catch (e) {
-    console.error('[handler] error:', e)
+    console.error('[handler] error processing update', update.update_id, e)
+    // ⚠️ Раньше ошибка просто глоталась — юзер видел "мёртвую" кнопку.
+    // Теперь шлём сообщение об ошибке, чтобы было видно причину.
+    const chatId = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id
+    if (chatId) {
+      const errMsg = e instanceof Error ? e.message : String(e)
+      try {
+        await altgram.sendMessage({
+          chat_id: chatId,
+          text: `❌ Внутренняя ошибка.\n\nДетали: ${errMsg.slice(0, 400)}`,
+        })
+      } catch { /* ignore */ }
+    }
   }
 }
 
@@ -220,6 +232,12 @@ async function handleText(msg: TgMessage) {
       break
     case '/withdraw':
       await handleWithdraw(msg, user, parts[1])
+      break
+    case '/debug':
+      await handleDebug(msg, user)
+      break
+    case '/ping':
+      await send(msg.chat.id, '🏓 pong')
       break
     default:
       if (cmd.startsWith('/')) {
@@ -655,6 +673,45 @@ async function handleListUsers(msg: TgMessage, user: { isAdmin: boolean }) {
   await send(msg.chat.id, `📋 **Юзеры (${users.length}):**\n\n${lines.join('\n')}`)
 }
 
+// Диагностика: проверка AltGram API + доступных gifts + баланса
+async function handleDebug(msg: TgMessage, user: { isAdmin: boolean; tgId: string }) {
+  if (!user.isAdmin) { await send(msg.chat.id, '🚫 Только админ.'); return }
+
+  const lines: string[] = ['🔧 **Диагностика**', '']
+
+  // 1. getMe
+  const me = await altgram.getMe()
+  lines.push(`🤖 Bot: ${me.ok ? `@${me.result?.username}` : '❌ ' + me.description}`)
+
+  // 2. Доступные gifts
+  const gifts = await altgram.getAvailableGifts()
+  if (gifts.ok && gifts.result) {
+    const available = gifts.result.gifts.filter(g => (g.remaining_count ?? 1) > 0)
+    lines.push(`🎁 Всего gifts: ${gifts.result.count}, доступно: ${available.length}`)
+    for (const g of available) {
+      lines.push(`   • id=\`${g.id}\` ${g.star_count}⭐ (осталось ${g.remaining_count})`)
+    }
+  } else {
+    lines.push(`🎁 Gifts: ❌ ${gifts.description}`)
+  }
+
+  // 3. Тест sendGift (проверка баланса) — пробуем отправить Royal Crown себе
+  const testRes = await altgram.sendGift({ user_id: Number(user.tgId), gift_id: NFT_GIFT_ID })
+  lines.push(`💸 Тест sendGift (${NFT_NAME}): ${testRes.ok ? '✅ ок' : '❌ ' + testRes.description}`)
+  if (!testRes.ok) {
+    lines.push('')
+    lines.push('⚠️ sendGift не работает. Возможные причины:')
+    lines.push('• У бота нет звёзд на балансе (нужно пополнить через Fragment)')
+    lines.push('• Gift sold out / limited и не может быть отправлен')
+  }
+
+  // 4. Юзеры в БД
+  const userCount = await db.user.count()
+  lines.push(`👥 Юзеров в БД: ${userCount}`)
+
+  await send(msg.chat.id, lines.join('\n'))
+}
+
 /* ------------------------------------------------------------------ */
 /* Callback handler                                                    */
 /* ------------------------------------------------------------------ */
@@ -773,5 +830,9 @@ async function handleCallback(cq: TgCallbackQuery) {
     await handleWithdraw(fakeMsg, user, String(amount))
   } else if (act === 'menu') {
     await sendMenu(chatId, user)
+  } else {
+    // Неизвестный callback — раньше просто молчали, кнопка казалась мёртвой
+    console.log(`[callback] UNKNOWN data="${data}"`)
+    await send(chatId, `⚠️ Неизвестная кнопка: \`${data}\`\nИспользуй /start`)
   }
 }

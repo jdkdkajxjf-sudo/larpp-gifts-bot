@@ -15,16 +15,22 @@ const OFFSET_FILE = `${import.meta.dir}/.offset.json`
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-function readOffset(): number {
+// ⚠️ offset хранится как STRING — update_id в Telegram может превышать
+// Number.MAX_SAFE_INTEGER (2^53), и Number() теряет точность, из-за чего
+// бот пропускает апдейты (кнопки "не работают"). Используем BigInt везде.
+function readOffset(): string {
   try {
-    if (!existsSync(OFFSET_FILE)) return 0
+    if (!existsSync(OFFSET_FILE)) return '0'
     const raw = JSON.parse(readFileSync(OFFSET_FILE, 'utf8'))
-    return typeof raw.offset === 'string' ? Number(raw.offset) : (raw.offset || 0)
-  } catch { return 0 }
+    const v = raw.offset
+    if (typeof v === 'string') return v
+    if (typeof v === 'number') return String(v)
+    return '0'
+  } catch { return '0' }
 }
 
-function saveOffset(offset: number) {
-  try { writeFileSync(OFFSET_FILE, JSON.stringify({ offset: String(offset) })) } catch {}
+function saveOffset(offset: string) {
+  try { writeFileSync(OFFSET_FILE, JSON.stringify({ offset })) } catch {}
 }
 
 const server = Bun.serve({
@@ -80,7 +86,7 @@ async function main() {
     throw e
   }
 
-  let offset = String(readOffset())
+  let offset = readOffset()
   console.log(`[larpp-bot] polling from offset=${offset}`)
 
   let handled = 0
@@ -115,8 +121,9 @@ async function main() {
       const updates = data.result ?? []
       for (const u of updates) {
         try {
+          // BigInt — без потери точности для больших update_id
           offset = String(BigInt(u.update_id) + 1n)
-          saveOffset(Number(offset))
+          saveOffset(offset)
           handled++
           await handleUpdate(u)
         } catch (e) {
