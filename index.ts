@@ -57,6 +57,8 @@ async function main() {
   try { await altgram.deleteWebhook() } catch {}
   await altgram.setMyCommands([
     { command: 'start', description: '🎁 Главное меню' },
+    { command: 'balance', description: '💼 Мой баланс' },
+    { command: 'withdraw', description: '💸 Вывести звёзды' },
     { command: 'promo', description: '🎟️ Активировать промокод' },
     { command: 'ref', description: '👥 Реферальная ссылка' },
     { command: 'stats', description: '📊 Статистика' },
