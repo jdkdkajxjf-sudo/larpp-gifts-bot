@@ -74,6 +74,7 @@ async function main() {
     { command: 'givegift', description: '[админ] Отправить NFT' },
     { command: 'broadcast', description: '[админ] Рассылка' },
     { command: 'listusers', description: '[админ] Юзеры' },
+    { command: 'debug', description: '[админ] Диагностика' },
   ])
 
   console.log(`Bot started as @${me.username}`)

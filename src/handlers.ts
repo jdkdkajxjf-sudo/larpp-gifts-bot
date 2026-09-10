@@ -204,12 +204,15 @@ async function handleText(msg: TgMessage) {
     case '/stats': {
       const refCount = await db.user.count({ where: { referredById: user.id } })
       const promoCount = await db.promoRedemption.count({ where: { userId: user.id } })
+      const fresh = await db.user.findUnique({ where: { id: user.id } })
+      const bal = fresh?.balance ?? user.balance ?? 0
       await send(msg.chat.id,
         [
           `📊 **Твоя статистика**`,
           ``,
           `👥 Приглашено: ${refCount}`,
           `🎁 ${NFT_EMOJI} получено: ${refCount * REF_REWARD}`,
+          `💼 Баланс: ${bal}⭐`,
           `🎟️ Промокодов активировано: ${promoCount}`,
         ].join('\n'))
       break
@@ -245,6 +248,9 @@ async function handleText(msg: TgMessage) {
       break
     case '/debug':
       await handleDebug(msg, user)
+      break
+    case '/balance':
+      await handleBalance(msg, user)
       break
     case '/ping':
       await send(msg.chat.id, '🏓 pong')
@@ -341,16 +347,30 @@ async function handlePromo(msg: TgMessage, user: { id: string; tgId: string }, c
     }
   } else if (promo.type === 'stars') {
     // Звёзды — начисляем на баланс
-    const updated = await db.user.update({
+    await db.user.update({
       where: { id: user.id },
       data: { balance: { increment: promo.reward } },
     })
+    // ⚠️ Перечитываем юзера — на Cloud Shell мог быть старый Prisma client,
+    // у которого update возвращает объект без поля balance (undefined).
+    // findUnique точно вернёт актуальный баланс.
+    const fresh = await db.user.findUnique({ where: { id: user.id } })
+    let newBalance: number | undefined = fresh?.balance
+    // Если fresh.balance тоже undefined — raw SQL запрос (последний рубеж)
+    if (newBalance === undefined) {
+      try {
+        const rows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
+        newBalance = rows[0]?.balance
+      } catch (e) { console.error('[promo] raw balance query failed:', e) }
+    }
+    // Финальный fallback
+    if (newBalance === undefined) newBalance = promo.reward
     await send(msg.chat.id,
       [
         `🎉 Промокод активирован! +${promo.reward}⭐`,
-        `💼 Баланс: ${updated.balance}⭐`,
+        `💼 Баланс: ${newBalance}⭐`,
         ``,
-        `Вывести: /withdraw 50`,
+        `Вывести: /withdraw 500`,
       ].join('\n'))
   }
 }
@@ -548,6 +568,10 @@ async function sendGiftByAmount(tgId: string, amount: number): Promise<boolean> 
 async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; balance: number }, amountArg?: string) {
   const amount = parseInt(amountArg ?? '0')
 
+  // Перечитываем баланс из БД — на Cloud Shell мог быть устаревший user объект
+  const freshUser = await db.user.findUnique({ where: { id: user.id } })
+  const realBalance = freshUser?.balance ?? user.balance ?? 0
+
   if (!amount || !WITHDRAW_AMOUNTS.includes(amount)) {
     const kb: TgInlineKeyboardMarkup = {
       inline_keyboard: [
@@ -558,7 +582,7 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
       [
         `💸 **Вывод звёзд через подарки**`,
         ``,
-        `💼 Баланс: ${user.balance}⭐`,
+        `💼 Баланс: ${realBalance}⭐`,
         ``,
         `Доступные суммы: ${WITHDRAW_AMOUNTS.join(', ')}⭐`,
         `Например: 1000⭐ → 2 подарка по 500⭐`,
@@ -566,8 +590,8 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
     return
   }
 
-  if (user.balance < amount) {
-    await send(msg.chat.id, `❌ Недостаточно звёзд. Баланс: ${user.balance}⭐`)
+  if (realBalance < amount) {
+    await send(msg.chat.id, `❌ Недостаточно звёзд. Баланс: ${realBalance}⭐`)
     return
   }
 
@@ -683,6 +707,37 @@ async function handleListUsers(msg: TgMessage, user: { isAdmin: boolean }) {
   await send(msg.chat.id, `📋 **Юзеры (${users.length}):**\n\n${lines.join('\n')}`)
 }
 
+// Показ баланса юзера — использует raw SQL как самый надёжный способ
+async function handleBalance(msg: TgMessage, user: { id: string; tgId: string }) {
+  // Сначала через Prisma
+  const fresh = await db.user.findUnique({ where: { id: user.id } })
+  let balance: number | undefined = fresh?.balance
+
+  // Если undefined — raw SQL
+  if (balance === undefined) {
+    try {
+      const rows = await db.$queryRaw`SELECT balance FROM "larpp"."User" WHERE id = ${user.id}` as Array<{ balance: number }>
+      balance = rows[0]?.balance
+    } catch (e) {
+      console.error('[balance] raw query failed:', e)
+    }
+  }
+
+  // Финальный fallback
+  if (balance === undefined) balance = 0
+
+  await send(msg.chat.id,
+    [
+      `💼 **Твой баланс**`,
+      ``,
+      `⭐ ${balance} звёзд`,
+      ``,
+      balance >= 500
+        ? `✅ Можно вывести: /withdraw 500`
+        : `❌ Нужно минимум 500⭐ для вывода`,
+    ].join('\n'))
+}
+
 // Диагностика: проверка AltGram API + доступных gifts + баланса
 async function handleDebug(msg: TgMessage, user: { isAdmin: boolean; tgId: string }) {
   if (!user.isAdmin) { await send(msg.chat.id, '🚫 Только админ.'); return }
@@ -770,13 +825,16 @@ async function handleCallback(cq: TgCallbackQuery) {
   } else if (act === 'stats') {
     const refCount = await db.user.count({ where: { referredById: user.id } })
     const promoCount = await db.promoRedemption.count({ where: { userId: user.id } })
+    // Перечитываем баланс на случай если user объект устарел
+    const fresh = await db.user.findUnique({ where: { id: user.id } })
+    const bal = fresh?.balance ?? user.balance ?? 0
     await send(chatId,
       [
         `📊 **Твоя статистика**`,
         ``,
         `👥 Приглашено: ${refCount}`,
         `🎁 ${NFT_EMOJI} получено: ${refCount * REF_REWARD}`,
-        `💼 Баланс: ${user.balance}⭐`,
+        `💼 Баланс: ${bal}⭐`,
         `🎟️ Промокодов: ${promoCount}`,
       ].join('\n'))
   } else if (act === 'mkpromo') {
