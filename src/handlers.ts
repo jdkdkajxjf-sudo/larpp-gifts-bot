@@ -723,7 +723,15 @@ async function handleCallback(cq: TgCallbackQuery) {
 
   let act = data
   let arg = ''
-  if (data.includes(':')) [act, arg] = data.split(':')
+  if (data.includes(':')) {
+    // ⚠️ НЕ используем split(':') — он обрежет arg до первого ':'.
+    // callback_data может содержать несколько ':' (например 'mkpromo3:nft:1:10').
+    // Раньше [act, arg] = data.split(':') давало arg='nft' вместо 'nft:1:10'
+    // → reward=0 → кнопка молчала (казалась мёртвой).
+    const idx = data.indexOf(':')
+    act = data.slice(0, idx)
+    arg = data.slice(idx + 1)
+  }
 
   const user = await upsertUser(from)
   const chatId = cq.message?.chat.id ?? from.id
