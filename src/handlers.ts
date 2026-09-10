@@ -117,17 +117,35 @@ async function handleText(msg: TgMessage) {
   switch (cmd) {
     case '/start': {
       const arg = parts[1]
+      let referrerTgId: string | null = null
+      
+      // Рефка по tgId: ref_1780243652
       if (arg?.startsWith('ref_')) {
-        const refCode = arg.slice(4)
-        const referrer = await db.user.findUnique({ where: { refCode } })
-        if (referrer && referrer.tgId !== user.tgId && !user.referredById) {
-          await db.user.update({ where: { id: user.id }, data: { referredById: referrer.id } })
-          // Награда рефереру: 2 кота
-          const result = await sendNftGift(referrer.tgId, REF_REWARD)
-          await send(referrer.tgId,
-            `🎉 По вашей ссылке пришёл @${user.username ?? user.firstName}!\n🎁 Награда: ${result.sent} × ${NFT_EMOJI} ${NFT_NAME}!`)
-        }
+        referrerTgId = arg.slice(4)
       }
+      
+      // Проверяем рефера ДО создания юзера
+      let referrer = null
+      if (referrerTgId) {
+        referrer = await db.user.findUnique({ where: { tgId: referrerTgId } })
+      }
+      
+      const user = await upsertUser(from)
+      
+      // Если рефер найден и юзер ещё не привязан
+      if (referrer && referrer.tgId !== user.tgId && !user.referredById) {
+        await db.user.update({ where: { id: user.id }, data: { referredById: referrer.id } })
+        
+        // Отправляем котов реферу
+        const result = await sendNftGift(referrer.tgId, REF_REWARD)
+        await send(referrer.tgId,
+          `🎉 По вашей ссылке пришёл @${user.username ?? user.firstName ?? user.tgId}!\n🎁 Награда: ${result.sent} × ${NFT_EMOJI} ${NFT_NAME}!`)
+        
+        // Уведомляем нового юзера
+        await send(msg.chat.id,
+          `👋 Тебя пригласил @${referrer.username ?? referrer.firstName ?? 'друг'}!\n🎁 Он получил ${result.sent} × ${NFT_EMOJI} за это!`)
+      }
+      
       await sendMenu(msg.chat.id, user)
       break
     }
@@ -151,7 +169,7 @@ async function handleText(msg: TgMessage) {
     }
     case '/ref':
     case '/referral': {
-      const refLink = `https://altgram.xyz/nftshopbot?start=ref_${user.refCode}`
+      const refLink = `https://altgram.xyz/nftshopbot?start=ref_${user.tgId}`
       const refCount = await db.user.count({ where: { referredById: user.id } })
       await send(msg.chat.id,
         [
