@@ -151,8 +151,7 @@ async function handleText(msg: TgMessage) {
     }
     case '/ref':
     case '/referral': {
-      const botUsername = 'nftshopbot' // текущий юзернейм бота
-      const refLink = `https://t.me/${botUsername}?start=ref_${user.refCode}`
+      const refLink = `https://altgram.xyz/nftshopbot?start=ref_${user.refCode}`
       const refCount = await db.user.count({ where: { referredById: user.id } })
       await send(msg.chat.id,
         [
@@ -209,16 +208,16 @@ async function handleText(msg: TgMessage) {
 /* Main menu                                                           */
 /* ------------------------------------------------------------------ */
 
-async function sendMenu(chatId: number, user: { firstName: string | null; username: string | null; isAdmin: boolean }) {
+async function sendMenu(chatId: number, user: { firstName: string | null; username: string | null; isAdmin: boolean; tgId: string }) {
   const kb: TgInlineKeyboardMarkup = {
     inline_keyboard: [
-      [{ text: `📢 Лучший ТГК @${CHANNEL_USERNAME}`, url: `https://t.me/${CHANNEL_USERNAME}` }],
+      [{ text: `📢 Лучший ТГК @${CHANNEL_USERNAME}`, url: `https://altgram.xyz/${CHANNEL_USERNAME}` }],
       [
         { text: '🎟️ Промокод', callback_data: 'promo_input' },
         { text: '👥 Рефералка', callback_data: 'ref' },
       ],
       [{ text: '📊 Статистика', callback_data: 'stats' }],
-      ...(user.isAdmin ? [[{ text: '👑 Админ-панель', callback_data: 'admin' }]] : []),
+      // Админ-панель убрана из меню — доступ только через /admin
     ],
   }
   await send(chatId,
@@ -489,8 +488,7 @@ async function handleCallback(cq: TgCallbackQuery) {
   if (act === 'promo_input') {
     await send(chatId, '🎟️ Введи промокод:\n\n`/promo ТВОЙ_КОД`')
   } else if (act === 'ref') {
-    const botUsername = 'nftshopbot'
-    const refLink = `https://t.me/${botUsername}?start=ref_${user.refCode}`
+    const refLink = `https://altgram.xyz/nftshopbot?start=ref_${user.refCode}`
     const refCount = await db.user.count({ where: { referredById: user.id } })
     await send(chatId,
       [
@@ -515,8 +513,6 @@ async function handleCallback(cq: TgCallbackQuery) {
         `🎁 ${NFT_EMOJI} получено: ${refCount * REF_REWARD}`,
         `🎟️ Промокодов: ${promoCount}`,
       ].join('\n'))
-  } else if (act === 'admin') {
-    await sendAdminPanel(chatId, user)
   } else if (act === 'menu') {
     await sendMenu(chatId, user)
   }
