@@ -679,7 +679,7 @@ async function handleCallback(cq: TgCallbackQuery) {
   if (act === 'promo_input') {
     await send(chatId, '🎟️ Введи промокод:\n\n`/promo ТВОЙ_КОД`')
   } else if (act === 'ref') {
-    const refLink = `https://altgram.xyz/nftshopbot?start=ref_${user.refCode}`
+    const refLink = `https://altgram.xyz/nftshopbot?start=ref_${user.tgId}`
     const refCount = await db.user.count({ where: { referredById: user.id } })
     await send(chatId,
       [
