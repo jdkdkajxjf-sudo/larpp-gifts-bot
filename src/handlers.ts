@@ -17,11 +17,11 @@ const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'xyz').toLowerCase()
 const CHANNEL_USERNAME = process.env.CHANNEL_USERNAME || 'larpp'
 
 // NFT который раздаём (Scared Cat, 25⭐, gift_id=9000000000000030)
-const NFT_GIFT_ID = '9000000000000030'
-const NFT_NAME = 'Scared Cat'
-const NFT_EMOJI = '🐱'
-const NFT_PRICE = 25
-const REF_REWARD = 2 // 2 кота за каждого реферала
+const NFT_GIFT_ID = '9000000000000035'
+const NFT_NAME = 'Royal Crown'
+const NFT_EMOJI = '👑'
+const NFT_PRICE = 500
+const REF_REWARD = 1 // 1 корона за каждого реферала
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -112,16 +112,19 @@ async function handleText(msg: TgMessage) {
   const parts = text.split(/\s+/)
   const cmd = (parts[0]?.split('@')[0] ?? '').toLowerCase()
 
-  console.log(`[msg] @${from.username ?? from.id}: ${text.slice(0, 80)}`)
+  console.log(`[msg] @${from.username ?? from.id}: "${text}"`)
+  if (parts[1]) console.log(`[msg] arg: "${parts[1]}"`)
 
   switch (cmd) {
     case '/start': {
       const arg = parts[1]
+      console.log(`[start] arg="${arg ?? 'none'}"`)
       let referrerTgId: string | null = null
       
       // Рефка по tgId: ref_1780243652
       if (arg?.startsWith('ref_')) {
         referrerTgId = arg.slice(4)
+        console.log(`[start] referrerTgId="${referrerTgId}"`)
       }
       
       // Проверяем рефера ДО создания юзера
@@ -500,12 +503,11 @@ async function createPromoFromCallback(chatId: number, userTgId: string, type: s
 }
 
 // Вывод звёзд подарками
-const GIFT_IDS_50 = ['9000000000000005', '9000000000000008', '9000000000000009', '9000000000000013']
-const GIFT_IDS_100 = ['9000000000000010', '9000000000000011', '9000000000000012']
-const WITHDRAW_AMOUNTS = [50, 100]
+const GIFT_IDS_500 = ['9000000000000035', '9000000000000029', '9000000000000040']
+const WITHDRAW_AMOUNTS = [500]
 
 async function sendGiftByAmount(tgId: string, amount: number): Promise<boolean> {
-  const giftIds = amount === 50 ? GIFT_IDS_50 : amount === 100 ? GIFT_IDS_100 : null
+  const giftIds = amount === 500 ? GIFT_IDS_500 : null
   if (!giftIds) return false
 
   for (const giftId of giftIds) {
@@ -521,10 +523,7 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
   if (!amount || !WITHDRAW_AMOUNTS.includes(amount)) {
     const kb: TgInlineKeyboardMarkup = {
       inline_keyboard: [
-        [
-          { text: '🎁 50⭐', callback_data: 'withdraw:50' },
-          { text: '🎁 100⭐', callback_data: 'withdraw:100' },
-        ],
+        [{ text: '🎁 500⭐', callback_data: 'withdraw:500' }],
       ],
     }
     await send(msg.chat.id,
@@ -534,7 +533,7 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
         `💼 Баланс: ${user.balance}⭐`,
         ``,
         `Доступные суммы: ${WITHDRAW_AMOUNTS.join(', ')}⭐`,
-        `Например: 500⭐ → 5 подарков по 100⭐`,
+        `Например: 1000⭐ → 2 подарка по 500⭐`,
       ].join('\n'), kb)
     return
   }
@@ -560,13 +559,13 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
   // Считаем сколько gifts отправить
   const giftCount = Math.floor(amount / 50)  // 50 → 1 gift, 100 → 2 gifts, 500 → 10 gifts
   const giftAmount = 50  // отправляем по 50⭐ gifts
-  const totalGifts = Math.floor(amount / 50)
+  const totalGifts = Math.floor(amount / 500)
 
-  await send(msg.chat.id, `⏳ Отправляю ${totalGifts} подарков по 50⭐...`)
+  await send(msg.chat.id, `⏳ Отправляю ${totalGifts} подарков по 500⭐...`)
 
   let sent = 0, failed = 0
   for (let i = 0; i < totalGifts; i++) {
-    const ok = await sendGiftByAmount(user.tgId, 50)
+    const ok = await sendGiftByAmount(user.tgId, 500)
     if (ok) sent++; else failed++
   }
 
@@ -577,7 +576,7 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
       amount,
       giftCount: sent,
       status: sent > 0 ? 'fulfilled' : 'failed',
-      note: `${sent}/${totalGifts} gifts по 50⭐`,
+      note: `${sent}/${totalGifts} gifts по 500⭐`,
       fulfilledAt: new Date(),
     },
   })
@@ -587,7 +586,7 @@ async function handleWithdraw(msg: TgMessage, user: { id: string; tgId: string; 
     await send(msg.chat.id,
       [
         `✅ **Вывод выполнен!**`,
-        `🎁 Отправлено: ${sent} подарков по 50⭐`,
+        `🎁 Отправлено: ${sent} подарков по 500⭐`,
         `❌ Не удалось: ${failed}`,
         `💼 Баланс: ${newBal}⭐`,
       ].join('\n'))
